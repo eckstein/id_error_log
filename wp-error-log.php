@@ -1,4 +1,5 @@
 <?php
+require_once plugin_dir_path(__FILE__) . 'id-config-transformer.php';
 /*
 Plugin Name: WP Error Log Viewer
 Description: View and manage WordPress and PHP errors in the admin area
@@ -112,60 +113,6 @@ function wp_error_log_ensure_log_file() {
     return true;
 }
 
-// Update this function to handle errors properly
-function wp_error_log_create_mu_plugin() {
-    $mu_plugin_dir = WPMU_PLUGIN_DIR;
-    $mu_plugin_file = $mu_plugin_dir . '/wp-error-log-debug-settings.php';
-
-    // Check if the mu-plugins directory exists and is writable
-    if (!file_exists($mu_plugin_dir)) {
-        if (!@mkdir($mu_plugin_dir, 0755, true)) {
-            add_settings_error('wp_error_log_settings', 'mu_plugin_dir_create_failed', 'Failed to create mu-plugins directory. Please check permissions.', 'error');
-            return false;
-        }
-    } elseif (!is_writable($mu_plugin_dir)) {
-        add_settings_error('wp_error_log_settings', 'mu_plugin_dir_not_writable', 'The mu-plugins directory is not writable. Please check permissions.', 'error');
-        return false;
-    }
-
-    // Prepare plugin content
-    $wp_debug = get_option('wp_error_log_debug', 0);
-    $wp_debug_log = get_option('wp_error_log_debug_log', 0);
-    $wp_debug_display = get_option('wp_error_log_debug_display', 0);
-
-    $mu_plugin_content = "<?php
-    /**
-     * Plugin Name: WP Error Log Debug Settings
-     * Description: Dynamically sets debug constants based on WP Error Log plugin settings.
-     * Version: 1.0
-     * Author: WP Error Log Plugin
-     */
-    if (!defined('WP_DEBUG')) {
-        define('WP_DEBUG', " . ($wp_debug ? 'true' : 'false') . ");
-    }
-    if (!defined('WP_DEBUG_LOG')) {
-        define('WP_DEBUG_LOG', " . ($wp_debug_log ? 'true' : 'false') . ");
-    }
-    if (!defined('WP_DEBUG_DISPLAY')) {
-        define('WP_DEBUG_DISPLAY', " . ($wp_debug_display ? 'true' : 'false') . ");
-    }";
-
-    // Try to write the file
-    $write_result = @file_put_contents($mu_plugin_file, $mu_plugin_content);
-    if ($write_result === false) {
-        add_settings_error('wp_error_log_settings', 'mu_plugin_write_failed', 'Failed to write the must-use plugin file. Please check permissions.', 'error');
-        return false;
-    }
-
-    // Verify the file was created and is readable
-    if (!file_exists($mu_plugin_file) || !is_readable($mu_plugin_file)) {
-        add_settings_error('wp_error_log_settings', 'mu_plugin_not_readable', 'The must-use plugin file was created but is not readable. Please check permissions.', 'error');
-        return false;
-    }
-
-    return true;
-}
-
 // Update the settings page function
 function wp_error_log_settings_page() {
     if (!current_user_can('manage_options')) {
@@ -175,20 +122,32 @@ function wp_error_log_settings_page() {
     // Ensure debug.log file exists
     wp_error_log_ensure_log_file();
 
+    $config_transformer = new WP_Config_Transformer();
+
     if (isset($_POST['wp_error_log_settings_nonce']) && wp_verify_nonce($_POST['wp_error_log_settings_nonce'], 'wp_error_log_settings')) {
-        update_option('wp_error_log_debug', isset($_POST['wp_debug']) ? 1 : 0);
-        update_option('wp_error_log_debug_log', isset($_POST['wp_debug_log']) ? 1 : 0);
-        update_option('wp_error_log_debug_display', isset($_POST['wp_debug_display']) ? 1 : 0);
-        
-        $result = wp_error_log_create_mu_plugin();
-        if ($result) {
+        $wp_debug = isset($_POST['wp_debug']) ? 'true' : 'false';
+        $wp_debug_log = isset($_POST['wp_debug_log']) ? 'true' : 'false';
+        $wp_debug_display = isset($_POST['wp_debug_display']) ? 'true' : 'false';
+
+        try {
+            $config_transformer->update('constant', 'WP_DEBUG', $wp_debug, array('raw' => true));
+            $config_transformer->update('constant', 'WP_DEBUG_LOG', $wp_debug_log, array('raw' => true));
+            $config_transformer->update('constant', 'WP_DEBUG_DISPLAY', $wp_debug_display, array('raw' => true));
             add_settings_error('wp_error_log_settings', 'settings_updated', 'Debug settings updated successfully.', 'success');
+        } catch (Exception $e) {
+            add_settings_error('wp_error_log_settings', 'update_failed', 'Failed to update wp-config.php: ' . $e->getMessage(), 'error');
         }
     }
 
-    $wp_debug = get_option('wp_error_log_debug', 0);
-    $wp_debug_log = get_option('wp_error_log_debug_log', 0);
-    $wp_debug_display = get_option('wp_error_log_debug_display', 0);
+    // Get current values
+    try {
+        $wp_debug = $config_transformer->exists('constant', 'WP_DEBUG') ? $config_transformer->get_value('constant', 'WP_DEBUG') : 'false';
+        $wp_debug_log = $config_transformer->exists('constant', 'WP_DEBUG_LOG') ? $config_transformer->get_value('constant', 'WP_DEBUG_LOG') : 'false';
+        $wp_debug_display = $config_transformer->exists('constant', 'WP_DEBUG_DISPLAY') ? $config_transformer->get_value('constant', 'WP_DEBUG_DISPLAY') : 'false';
+    } catch (Exception $e) {
+        add_settings_error('wp_error_log_settings', 'read_failed', 'Failed to read wp-config.php: ' . $e->getMessage(), 'error');
+        $wp_debug = $wp_debug_log = $wp_debug_display = 'false';
+    }
 
     ?>
     <div class="wrap wp-error-log-wrap wp-error-log-settings">
@@ -199,15 +158,15 @@ function wp_error_log_settings_page() {
             <table class="form-table">
                 <tr>
                     <th scope="row"><label for="wp_debug">Enable WP_DEBUG</label></th>
-                    <td><input type="checkbox" id="wp_debug" name="wp_debug" <?php checked($wp_debug, 1); ?>></td>
+                    <td><input type="checkbox" id="wp_debug" name="wp_debug" <?php checked($wp_debug, 'true'); ?>></td>
                 </tr>
                 <tr>
                     <th scope="row"><label for="wp_debug_log">Enable WP_DEBUG_LOG</label></th>
-                    <td><input type="checkbox" id="wp_debug_log" name="wp_debug_log" <?php checked($wp_debug_log, 1); ?>></td>
+                    <td><input type="checkbox" id="wp_debug_log" name="wp_debug_log" <?php checked($wp_debug_log, 'true'); ?>></td>
                 </tr>
                 <tr>
                     <th scope="row"><label for="wp_debug_display">Enable WP_DEBUG_DISPLAY</label></th>
-                    <td><input type="checkbox" id="wp_debug_display" name="wp_debug_display" <?php checked($wp_debug_display, 1); ?>></td>
+                    <td><input type="checkbox" id="wp_debug_display" name="wp_debug_display" <?php checked($wp_debug_display, 'true'); ?>></td>
                 </tr>
             </table>
             <?php submit_button('Save Changes'); ?>
